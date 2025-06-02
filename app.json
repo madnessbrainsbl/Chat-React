@@ -1,32 +1,53 @@
 {
   "expo": {
+    "icon": "./assets/icon.png",
+    "assetBundlePatterns": ["**/*"],
     "name": "MobileChatApp",
-    "slug": "MobileChatApp",
+    "slug": "<YOUR_APP_SLUG>",
+    "scheme": "<YOUR_APP_SCHEME>",
     "updates": {
-      "fallbackToCacheTimeout": 0
+      "fallbackToCacheTimeout": 0,
+      "url": "<YOUR_UPDATES_URL>"
     },
     "version": "1.0.0",
     "orientation": "portrait",
-    "icon": "./assets/icon.png",
     "userInterfaceStyle": "light",
-    "newArchEnabled": true,
     "splash": {
       "image": "./assets/splash-icon.png",
       "resizeMode": "contain",
       "backgroundColor": "#ffffff"
     },
     "ios": {
-      "supportsTablet": true
+      "supportsTablet": true,
+      "bundleIdentifier": "<YOUR_IOS_BUNDLE_IDENTIFIER>",
+      "infoPlist": {
+        "ITSAppUsesNonExemptEncryption": false
+      }
     },
     "android": {
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundColor": "#ffffff"
       },
-      "edgeToEdgeEnabled": true
+      "edgeToEdgeEnabled": true,
+      "package": "<YOUR_ANDROID_PACKAGE_NAME>",
+      "softwareKeyboardLayoutMode": "pan",
+      "androidNavigationBar": {
+        "barStyle": "dark-content",
+        "backgroundColor": "#FFFFFF"
+      }
     },
     "web": {
       "favicon": "./assets/favicon.png"
-    }
+    },
+    "extra": {
+      "eas": {
+        "projectId": "<YOUR_EAS_PROJECT_ID>"
+      }
+    },
+    "runtimeVersion": {
+      "policy": "appVersion"
+    },
+    "owner": ""
   }
 }

@@ -6,7 +6,11 @@ import {
   TouchableOpacity,
   StyleSheet,
   Alert,
+  KeyboardAvoidingView,
+  Platform,
+  ScrollView,
 } from "react-native";
+import { SafeAreaView } from "react-native-safe-area-context";
 import { UserService } from "../services/firebase";
 
 interface AddUserScreenProps {
@@ -37,40 +41,56 @@ const AddUserScreen: React.FC<AddUserScreenProps> = ({ navigation }) => {
   };
 
   return (
-    <View style={styles.container}>
-      <Text style={styles.label}>Email</Text>
-      <TextInput
-        style={styles.input}
-        value={email}
-        onChangeText={setEmail}
-        keyboardType="email-address"
-        autoCapitalize="none"
-        placeholder="Введите email"
-      />
+    <SafeAreaView style={styles.safeArea}>
+      <KeyboardAvoidingView
+        style={styles.container}
+        behavior={Platform.OS === "ios" ? "padding" : undefined}
+      >
+        <ScrollView
+          contentContainerStyle={styles.scrollContent}
+          keyboardShouldPersistTaps="handled"
+        >
+          <Text style={styles.label}>Email</Text>
+          <TextInput
+            style={styles.input}
+            value={email}
+            onChangeText={setEmail}
+            keyboardType="email-address"
+            autoCapitalize="none"
+            placeholder="Введите email"
+          />
 
-      <Text style={styles.label}>Имя пользователя</Text>
-      <TextInput
-        style={styles.input}
-        value={displayName}
-        onChangeText={setDisplayName}
-        autoCapitalize="words"
-        placeholder="Введите имя пользователя"
-      />
+          <Text style={styles.label}>Имя пользователя</Text>
+          <TextInput
+            style={styles.input}
+            value={displayName}
+            onChangeText={setDisplayName}
+            autoCapitalize="words"
+            placeholder="Введите имя пользователя"
+          />
 
-      <TouchableOpacity style={styles.button} onPress={handleAddUser}>
-        <Text style={styles.buttonText}>Добавить пользователя</Text>
-      </TouchableOpacity>
-    </View>
+          <TouchableOpacity style={styles.button} onPress={handleAddUser}>
+            <Text style={styles.buttonText}>Добавить пользователя</Text>
+          </TouchableOpacity>
+        </ScrollView>
+      </KeyboardAvoidingView>
+    </SafeAreaView>
   );
 };
 
 export default AddUserScreen;
 
 const styles = StyleSheet.create({
+  safeArea: {
+    flex: 1,
+    backgroundColor: "#f5f5f5",
+  },
   container: {
     flex: 1,
+  },
+  scrollContent: {
     padding: 20,
-    backgroundColor: "#f5f5f5",
+    flexGrow: 1,
   },
   label: {
     fontSize: 16,

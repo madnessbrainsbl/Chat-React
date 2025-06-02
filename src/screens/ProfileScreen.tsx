@@ -9,9 +9,19 @@ import {
   ActivityIndicator,
   Alert,
   Image,
+  KeyboardAvoidingView,
+  Platform,
+  ScrollView,
+  Switch,
 } from "react-native";
+import { SafeAreaView } from "react-native-safe-area-context";
 import * as ImagePicker from "expo-image-picker";
+import * as MediaLibrary from "expo-media-library";
+import * as FileSystem from "expo-file-system";
 import { AuthService, UserService } from "../services/firebase";
+import { uploadToGoogleDrive } from "../services/drive";
+import { useTheme } from "../services/ThemeContext";
+import { Ionicons } from "@expo/vector-icons";
 
 interface ProfileScreenProps {
   navigation: any;
@@ -27,6 +37,9 @@ const ProfileScreen: React.FC<ProfileScreenProps> = ({ navigation }) => {
   // Получение текущего пользователя
   const currentUser = AuthService.getCurrentUser();
 
+  // Получаем тему из контекста
+  const { colors, isDarkTheme, toggleTheme } = useTheme();
+
   useEffect(() => {
     loadUserProfile();
   }, []);
@@ -41,7 +54,17 @@ const ProfileScreen: React.FC<ProfileScreenProps> = ({ navigation }) => {
 
       if (userData) {
         setDisplayName(userData.displayName);
-        setPhotoURL(userData.photoURL || null);
+
+        // Проверяем, что фото URL существует и не пустой
+        if (userData.photoURL) {
+          console.log("Загружен аватар пользователя:", userData.photoURL);
+          // Добавляем случайный параметр к URL для предотвращения кеширования
+          const photoURLWithCache = `${userData.photoURL}?cache=${Date.now()}`;
+          setPhotoURL(photoURLWithCache);
+        } else {
+          console.log("У пользователя нет аватара");
+          setPhotoURL(null);
+        }
       }
 
       setLoading(false);
@@ -80,41 +103,125 @@ const ProfileScreen: React.FC<ProfileScreenProps> = ({ navigation }) => {
   const handleChangeAvatar = async () => {
     if (!currentUser) return;
 
-    try {
-      // Запрос разрешения на доступ к галерее
-      const { status } =
-        await ImagePicker.requestMediaLibraryPermissionsAsync();
+    // Запрос разрешения на доступ к галерее
+    const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (status !== "granted") {
+      Alert.alert("Ошибка", "Необходимо разрешение на доступ к галерее");
+      return;
+    }
 
-      if (status !== "granted") {
-        Alert.alert("Ошибка", "Необходимо разрешение на доступ к галерее");
-        return;
+    // Выбор изображения
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ImagePicker.MediaTypeOptions.Images,
+      allowsEditing: true,
+      aspect: [1, 1],
+      quality: 0.8,
+    });
+
+    if (result.canceled || !result.assets || result.assets.length === 0) return;
+
+    const localUri = result.assets[0].uri;
+
+    try {
+      // Запрос разрешения на запись в галерею (может быть ограничено в Expo Go)
+      try {
+        const libraryPermission = await MediaLibrary.requestPermissionsAsync();
+        if (libraryPermission.status === "granted") {
+          try {
+            // Сохраняем копию файла в галерее устройства (может не работать в Expo Go)
+            const asset = await MediaLibrary.createAssetAsync(localUri);
+            try {
+              await MediaLibrary.createAlbumAsync(
+                "MobileChatApp",
+                asset,
+                false
+              );
+              console.log("Фотография сохранена в галерее устройства");
+            } catch (albumError) {
+              console.warn(
+                "Ограничение создания альбома (Expo Go):",
+                albumError
+              );
+            }
+          } catch (mediaError) {
+            console.warn("Ограничение доступа к медиатеке:", mediaError);
+          }
+        }
+      } catch (permError) {
+        console.warn("Ошибка получения разрешений:", permError);
       }
 
-      // Выбор изображения
-      const result = await ImagePicker.launchImageLibraryAsync({
-        mediaTypes: ImagePicker.MediaTypeOptions.Images,
-        allowsEditing: true,
-        aspect: [1, 1],
-        quality: 0.8,
-      });
+      // Показываем выбранное изображение сразу для лучшего UX
+      setPhotoURL(localUri);
+      setUploadingAvatar(true);
 
-      if (!result.canceled && result.assets && result.assets.length > 0) {
-        setUploadingAvatar(true);
+      // Генерируем имя файла с расширением
+      const fileInfo = localUri.split("/").pop() || "";
+      const fileExt = fileInfo.includes(".")
+        ? fileInfo.split(".").pop()
+        : "jpg";
+      const fileName = `avatar_${currentUser.uid}_${Date.now()}.${fileExt}`;
 
-        // Загрузка аватара
-        const downloadURL = await UserService.uploadAvatar(
-          currentUser.uid,
-          result.assets[0].uri
+      try {
+        // Сначала пробуем загрузить на сервер
+        const downloadURL = await uploadToGoogleDrive(localUri, fileName);
+        console.log("Полученный URL аватара:", downloadURL);
+
+        // Немедленно обновляем UI с новым аватаром
+        setPhotoURL(downloadURL);
+
+        // Обновление профиля в Firebase
+        await AuthService.updateProfile(currentUser.uid, {
+          photoURL: downloadURL,
+        });
+      } catch (uploadError) {
+        // Если загрузка не удалась, используем локальный URI как временное решение
+        console.warn(
+          "Не удалось загрузить аватар на сервер, используем локальную версию:",
+          uploadError
         );
 
-        setPhotoURL(downloadURL);
-        setUploadingAvatar(false);
+        // Копируем файл в постоянное хранилище приложения
+        try {
+          const permanentDir = FileSystem.documentDirectory + "avatars/";
+          try {
+            await FileSystem.makeDirectoryAsync(permanentDir, {
+              intermediates: true,
+            });
+          } catch (e) {
+            // Директория уже может существовать
+          }
 
-        Alert.alert("Успех", "Аватар успешно обновлен");
+          const permanentUri = permanentDir + fileName;
+          await FileSystem.copyAsync({
+            from: localUri,
+            to: permanentUri,
+          });
+
+          // Используем локальный URI для отображения и сохранения
+          console.log("Локальный аватар сохранен:", permanentUri);
+          setPhotoURL(permanentUri);
+
+          // Обновляем профиль с локальным URI
+          await AuthService.updateProfile(currentUser.uid, {
+            photoURL: permanentUri,
+          });
+        } catch (e) {
+          console.error("Не удалось сохранить локальный аватар:", e);
+          throw e; // Пробрасываем ошибку дальше
+        }
+
+        Alert.alert(
+          "Успех",
+          "Аватар успешно обновлен и сохранен на устройстве"
+        );
       }
-    } catch (error) {
+    } catch (error: any) {
       console.error("Ошибка при загрузке аватара:", error);
-      Alert.alert("Ошибка", "Не удалось загрузить аватар");
+      Alert.alert("Ошибка", error.message || "Не удалось загрузить аватар");
+      // Возвращаем предыдущий аватар в случае ошибки
+      loadUserProfile();
+    } finally {
       setUploadingAvatar(false);
     }
   };
@@ -130,6 +237,76 @@ const ProfileScreen: React.FC<ProfileScreenProps> = ({ navigation }) => {
     }
   };
 
+  // Обновляем стили с использованием цветов темы
+  const themedStyles = StyleSheet.create({
+    container: {
+      flex: 1,
+      backgroundColor: colors.background,
+    },
+    keyboardAvoidingContainer: {
+      flex: 1,
+    },
+    scrollContainer: {
+      flexGrow: 1,
+    },
+    themeToggleContainer: {
+      flexDirection: "row",
+      alignItems: "center",
+      justifyContent: "space-between",
+      backgroundColor: colors.surface,
+      marginHorizontal: 20,
+      marginTop: 20,
+      padding: 15,
+      borderRadius: 8,
+      borderWidth: 1,
+      borderColor: colors.border,
+    },
+    themeToggleText: {
+      color: colors.text,
+      fontSize: 16,
+    },
+    formContainer: {
+      padding: 20,
+    },
+    label: {
+      fontSize: 16,
+      color: colors.text,
+      marginBottom: 5,
+    },
+    input: {
+      backgroundColor: colors.surface,
+      borderRadius: 8,
+      padding: 15,
+      marginBottom: 20,
+      borderWidth: 1,
+      borderColor: colors.border,
+      color: colors.text,
+    },
+    updateButton: {
+      backgroundColor: colors.primary,
+      borderRadius: 8,
+      padding: 15,
+      alignItems: "center",
+    },
+    updateButtonText: {
+      color: "#fff",
+      fontWeight: "bold",
+      fontSize: 16,
+    },
+    logoutButton: {
+      margin: 20,
+      backgroundColor: colors.accent,
+      borderRadius: 8,
+      padding: 15,
+      alignItems: "center",
+    },
+    logoutButtonText: {
+      color: "#fff",
+      fontWeight: "bold",
+      fontSize: 16,
+    },
+  });
+
   if (loading) {
     return (
       <View style={styles.loadingContainer}>
@@ -139,64 +316,104 @@ const ProfileScreen: React.FC<ProfileScreenProps> = ({ navigation }) => {
   }
 
   return (
-    <View style={styles.container}>
-      <ImageBackground
-        source={{ uri: photoURL || "https://via.placeholder.com/600x200" }}
-        style={styles.header}
-        imageStyle={styles.headerImage}
+    <SafeAreaView style={themedStyles.container}>
+      <KeyboardAvoidingView
+        style={themedStyles.keyboardAvoidingContainer}
+        behavior={Platform.OS === "ios" ? "padding" : undefined}
       >
-        <View style={styles.headerContent}>
-          <TouchableOpacity
-            style={styles.avatarContainer}
-            onPress={handleChangeAvatar}
-            disabled={uploadingAvatar}
-          >
-            {uploadingAvatar ? (
-              <ActivityIndicator size="large" color="#fff" />
-            ) : photoURL ? (
-              <Image source={{ uri: photoURL }} style={styles.avatar} />
-            ) : (
-              <View style={styles.avatarPlaceholder}>
-                <Text style={styles.avatarText}>{displayName.charAt(0)}</Text>
-              </View>
-            )}
-
-            <View style={styles.changeAvatarButton}>
-              <Text style={styles.changeAvatarButtonText}>📷</Text>
-            </View>
-          </TouchableOpacity>
-
-          <Text style={styles.headerName}>{displayName}</Text>
-          <Text style={styles.headerEmail}>{currentUser?.email}</Text>
-        </View>
-      </ImageBackground>
-
-      <View style={styles.formContainer}>
-        <Text style={styles.label}>Имя пользователя</Text>
-        <TextInput
-          style={styles.input}
-          value={displayName}
-          onChangeText={setDisplayName}
-          placeholder="Введите имя пользователя"
-        />
-
-        <TouchableOpacity
-          style={styles.updateButton}
-          onPress={handleUpdateProfile}
-          disabled={updating}
+        <ScrollView
+          contentContainerStyle={themedStyles.scrollContainer}
+          keyboardShouldPersistTaps="handled"
         >
-          {updating ? (
-            <ActivityIndicator color="#fff" />
-          ) : (
-            <Text style={styles.updateButtonText}>Обновить профиль</Text>
-          )}
-        </TouchableOpacity>
-      </View>
+          <ImageBackground
+            source={{
+              uri: photoURL || "https://i.pravatar.cc/600?u=default",
+              cache: "reload",
+            }}
+            style={styles.header}
+            imageStyle={styles.headerImage}
+            key={photoURL}
+          >
+            <View style={styles.headerContent}>
+              <TouchableOpacity
+                style={styles.avatarContainer}
+                onPress={handleChangeAvatar}
+                disabled={uploadingAvatar}
+              >
+                {uploadingAvatar ? (
+                  <ActivityIndicator size="large" color="#fff" />
+                ) : photoURL ? (
+                  <Image
+                    source={{
+                      uri: photoURL,
+                      cache: "reload",
+                    }}
+                    style={styles.avatar}
+                    key={`avatar_${photoURL}`}
+                  />
+                ) : (
+                  <View style={styles.avatarPlaceholder}>
+                    <Text style={styles.avatarText}>
+                      {displayName.charAt(0)}
+                    </Text>
+                  </View>
+                )}
 
-      <TouchableOpacity style={styles.logoutButton} onPress={handleLogout}>
-        <Text style={styles.logoutButtonText}>Выйти из аккаунта</Text>
-      </TouchableOpacity>
-    </View>
+                <View style={styles.changeAvatarButton}>
+                  <Text style={styles.changeAvatarButtonText}>📷</Text>
+                </View>
+              </TouchableOpacity>
+
+              <Text style={styles.headerName}>{displayName}</Text>
+              <Text style={styles.headerEmail}>{currentUser?.email}</Text>
+            </View>
+          </ImageBackground>
+
+          {/* Переключатель темы */}
+          <View style={themedStyles.themeToggleContainer}>
+            <Text style={themedStyles.themeToggleText}>Темная тема</Text>
+            <Switch
+              value={isDarkTheme}
+              onValueChange={toggleTheme}
+              thumbColor={isDarkTheme ? colors.primary : "#f4f3f4"}
+              trackColor={{ false: "#767577", true: `${colors.primary}80` }}
+            />
+          </View>
+
+          <View style={themedStyles.formContainer}>
+            <Text style={themedStyles.label}>Имя пользователя</Text>
+            <TextInput
+              style={themedStyles.input}
+              value={displayName}
+              onChangeText={setDisplayName}
+              placeholder="Введите имя пользователя"
+              placeholderTextColor={colors.textSecondary}
+            />
+
+            <TouchableOpacity
+              style={themedStyles.updateButton}
+              onPress={handleUpdateProfile}
+              disabled={updating}
+            >
+              {updating ? (
+                <ActivityIndicator color="#fff" />
+              ) : (
+                <Text style={themedStyles.updateButtonText}>
+                  Обновить профиль
+                </Text>
+              )}
+            </TouchableOpacity>
+          </View>
+
+          <TouchableOpacity
+            style={themedStyles.logoutButton}
+            onPress={handleLogout}
+          >
+            <Text style={themedStyles.logoutButtonText}>Выйти из аккаунта</Text>
+          </TouchableOpacity>
+        </ScrollView>
+      </KeyboardAvoidingView>
+    </SafeAreaView>
   );
 };
 
@@ -204,6 +421,12 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: "#f5f5f5",
+  },
+  keyboardAvoidingContainer: {
+    flex: 1,
+  },
+  scrollContainer: {
+    flexGrow: 1,
   },
   loadingContainer: {
     flex: 1,
@@ -214,9 +437,12 @@ const styles = StyleSheet.create({
   header: {
     alignItems: "center",
     padding: 20,
+    backgroundColor: "#4A86E8",
+    height: 200,
   },
   headerImage: {
     resizeMode: "cover",
+    opacity: 0.8,
   },
   headerContent: {
     alignItems: "center",
@@ -227,6 +453,15 @@ const styles = StyleSheet.create({
     borderRadius: 50,
     marginBottom: 10,
     position: "relative",
+    backgroundColor: "#ffffff",
+    overflow: "hidden",
+    borderWidth: 3,
+    borderColor: "#ffffff",
+    elevation: 5,
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.3,
+    shadowRadius: 3,
   },
   avatar: {
     width: 100,
